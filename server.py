@@ -38,6 +38,18 @@ def generate_key():
 
 class Server(socket):
     
+    def __init__(self):
+        self.k1 = 0
+        self.k2 = 0
+        self.k3 = 0
+        self.k4 = 0
+
+    def set_keys(self,k1,k2,k3,k4):
+        self.k1 = k1
+        self.k2 = k2
+        self.k3 = k3
+        self.k4 = k4
+
     def send_ack_initial_connection(self,encrypted_msg,private_key,conn):
         """
         * Responds to the client connection
@@ -62,10 +74,33 @@ class Server(socket):
         msg = strxor(sha.digest(),pad(Nb.bytes,32))
         integrity = pss.new(rsa_private_key).sign(SHA256.new(msg))
         length = len(msg) + len(integrity)
+        session = strxor(Na,Nb.bytes)
         conn.send(length)
+        return session
 
     # return msg
     # conn.send(rsa_key.encrypt(msg))
+    def bytes_to_int(self,data):
+        """
+            Converts bytes to integer
+
+            Returns:
+                int  
+        """
+        result = 0
+        for b in data:
+            result += result*256 + int(b)
+        
+        return result
+
+    def int_to_bytes(self,data):
+        """
+            Converts integer to bytes
+
+            Returns:
+                bytes 
+        """
+        return data.to_bytes(16,byteorder='big')
 
     def encrypt_file(self,public_key, file_data):
         rsa_key = RSA.importKey(public_key)
@@ -102,12 +137,21 @@ def __init__():
     s = socket.socket()
     s.bind(("localhost",5543))
     s.listen(10)
+    f_pubk = open('private_key.pem', 'rb')
+    private_key = f_pubk.read()
+    f_pubk.close()
     while True:
         sock, address = s.accept()
         print("Connection accepted from ",address)
         server = Server(sock)
-        server.send_ack_initial_connection
-
+        # TODO: receive bytes from client
+        msg = sock.recv(20)
+        session_key = server.send_ack_initial_connection(msg,private_key,sock)
+        session = server.bytes_to_int(session_key)
+        k1 = server.int_to_bytes(session + 2)
+        k2 = server.int_to_bytes(session + 5)
+        k3 = server.int_to_bytes(session + 7)
+        k4 = server.int_to_bytes(session + 9)
 
 # generate_key()
 # while True:

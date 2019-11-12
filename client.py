@@ -1,6 +1,5 @@
 import socket
 import sys
-import pandas
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Signature import pss
@@ -75,6 +74,27 @@ class Client:
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
 
+    def bytes_to_int(self,data):
+        """
+            Converts bytes to integer
+
+            Returns:
+                int  
+        """
+        result = 0
+        for b in data:
+            result += result*256 + int(b)
+        return result
+
+    def int_to_bytes(self,data):
+        """
+            Converts integer to bytes
+
+            Returns:
+                bytes 
+        """
+        return data.to_bytes(16,byteorder='big')
+
     def initiate_connection(self):
         """
         Initiates socket connection
@@ -95,7 +115,11 @@ def __init__():
     public_key = f_pubk.read()
     f_pubk.close()
     session_key = client.server_authentication(public_key,s)
-    
+    session = client.bytes_to_int(session_key)
+    k1 = client.int_to_bytes(session + 2)
+    k2 = client.int_to_bytes(session + 5)
+    k3 = client.int_to_bytes(session + 7)
+    k4 = client.int_to_bytes(session + 9)
 
 # print('Encrypting file...')
 # rsa_key = RSA.importKey(public_key)
