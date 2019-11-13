@@ -8,6 +8,7 @@ from Crypto.Util.Padding import pad,unpad
 from Crypto.Hash import SHA256
 import zlib
 import uuid
+import random 
 
 class Client:
 
@@ -107,6 +108,58 @@ class Client:
         s.connect(("localhost",5543))
         print("Connection established")
         return s
+    
+    def send_seq_num(self, conn, key1, key2):
+        """
+        Generates random sequence number and send it as 
+        keyed hash
+        msg1 : send seq number using keyed hash  
+        msg2: for server side to check integrity of msg1
+        """
+        seq = random.randint(1000000000,9999999999)
+        seq_bytes = seq.to_bytes(32,byteorder='big')
+        msg = key1+ "Alice".encode()
+        sha = SHA256.new(msg)
+        msg = strxor(sha.digest(),seq_bytes)
+        
+        sha_integrity = SHA256.new(msg+key2)
+        #send the message and hash of message(32 bytes each)
+        conn.send(msg)
+        conn.send(sha_integrity.digest())
+    
+    def recv_seq_one(self, recv_msg1, key1, key2):
+        '''
+        Calculates the server side initial seq number 
+        returns the server seq number as int
+        '''
+        msg = key1 + "Bob".encode()
+        sha = SHA256.new(msg)
+        #received seq number in bytes 
+        recv_seq = strxor(recv_msg1 , sha.digest())
+        seq = self.bytes_to_int(recv_seq)
+        #verified till previous line ; we got back seq number
+        return seq
+
+
+    def recv_seq_two(self ,recv_msg2,recv_msg1,  key2):
+        """
+        Checks integrity of incoming message 
+        """
+
+        sha_integrity = SHA256.new(recv_msg1+key2)
+        return  sha_integrity.digest()== recv_msg2
+        #verified 
+
+        
+    
+
+
+
+
+
+
+
+        
 
 def __init__():
     client = Client()
@@ -120,7 +173,17 @@ def __init__():
     k2 = client.int_to_bytes(session + 5)
     k3 = client.int_to_bytes(session + 7)
     k4 = client.int_to_bytes(session + 9)
-
+    #send 3rd message
+    client.send_seq_num(s, k1,k2)
+    #receive 4th message
+    recv_seq_msg_one = s.recv(32)
+    recv_seq_msg_two = s.recv(32)
+    server_seq_int = client.recv_seq_one(recv_seq_msg_one, k1, k2)
+    integrity_check = client.recv_seq_two( recv_seq_msg_two,recv_seq_msg_one, k2 )
+    if integrity_check:
+        pass
+    else:
+        print('message is tampered')
 # print('Encrypting file...')
 # rsa_key = RSA.importKey(public_key)
 # initial_string = rsa_key.encrypt(Na+"Alice")

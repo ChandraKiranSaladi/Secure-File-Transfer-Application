@@ -9,6 +9,7 @@ from Crypto.Signature import pss
 from Crypto.Hash import SHA256
 import zlib
 import uuid
+import random
 
 '''
 Generate RSA public/private key of server
@@ -90,7 +91,7 @@ class Server(socket):
         result = 0
         for b in data:
             result += result*256 + int(b)
-        
+
         return result
 
     def int_to_bytes(self,data):
@@ -101,6 +102,44 @@ class Server(socket):
                 bytes 
         """
         return data.to_bytes(16,byteorder='big')
+    def recv_seq_one (self, recv_msg1, key1): 
+        """
+        Retrieves the the sequence number of client 
+        Returns : client sequence number
+        """
+        msg = key1 + "Alice".encode()
+        sha = SHA256.new(msg)
+        #received seq number in bytes 
+        recv_seq = strxor(recv_msg1 , sha.digest())
+        seq = self.bytes_to_int(recv_seq)
+        #verified till previous line ; we got back seq number
+        return seq
+
+
+        
+    def recv_seq_two(self, recv_msg2,recv_msg1,  key2):
+        """
+        Checks integrity of incoming message 
+        """
+
+        sha_integrity = SHA256.new(recv_msg1+key2)
+        return  sha_integrity.digest()== recv_msg2
+        #verified 
+
+
+
+
+
+
+    def send_seq_num(self,sock,  key1, key2):
+        seq = random.randint(1000000000,9999999999)
+        seq_bytes = seq.to_bytes(32,byteorder='big')
+        msg = key1+ "Bob".encode()
+        sha = SHA256.new(msg)
+        msg = strxor(sha.digest(),seq_bytes)
+        sha_integrity = SHA256.new(msg+key2)
+        sock.send(msg)
+        sock.send(sha_integrity.digest())
 
     def encrypt_file(self,public_key, file_data):
         rsa_key = RSA.importKey(public_key)
@@ -145,13 +184,25 @@ def __init__():
         print("Connection accepted from ",address)
         server = Server(sock)
         # TODO: receive bytes from client
-        msg = sock.recv(20)
+        msg = sock.recv(32)
         session_key = server.send_ack_initial_connection(msg,private_key,sock)
         session = server.bytes_to_int(session_key)
         k1 = server.int_to_bytes(session + 2)
         k2 = server.int_to_bytes(session + 5)
         k3 = server.int_to_bytes(session + 7)
         k4 = server.int_to_bytes(session + 9)
+        #receive 3rd message 
+        recv_seq_msg_one = sock.recv(32)
+        recv_seq_msg_two = sock.recv(32)
+        client_seq_int = server.recv_seq_one(recv_seq_msg_one, k1)
+        integrity_check = server.recv_seq_two(recv_seq_msg_two, recv_seq_msg_one , k2)
+        if integrity_check:
+            pass
+        else:
+            print('message is tampered')
+        #send 4th message
+        server.send_seq_num(sock, k1, k2)
+
 
 # generate_key()
 # while True:
