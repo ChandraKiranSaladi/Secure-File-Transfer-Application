@@ -5,6 +5,7 @@ from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Signature import pss
 from Crypto.Util.strxor import strxor
 from Crypto.Util.Padding import pad,unpad
+from Crypto.Random import get_random_bytes
 from Crypto.Hash import SHA256
 import zlib
 import uuid
@@ -20,7 +21,7 @@ class Client:
         self.k2 = k2
         self.k3 = k3
         self.k4 = k4
-
+        self.command_list = ["Upload","Download","List","End","Close"]
     def server_authentication(self,public_key):
         """
         Authenticates server to the client
@@ -90,7 +91,7 @@ class Client:
 
          - s: socket
         """
-        s = socket.socket()
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.connect(("localhost",5543))
         print("Connection established")
         self.socket = s
@@ -102,57 +103,78 @@ class Client:
         msg1 : send seq number using keyed hash  
         msg2: for server side to check integrity of msg1
         """
-        # FIXME: seqA and seqB 32 bits? step4 include seqA in hash?
-        seq = random.randint(1000000000,9999999999)
-        seq_bytes = self.int_to_bytes(seq,32)
-        msg = "Alice".encode()+self.k1
-        sha = SHA256.new(msg)
-        msg = strxor(sha.digest(),seq_bytes)
-        sha_integrity = SHA256.new(msg+self.k2)
+        seqA_bytes = get_random_bytes(32)
+        seqA = int.from_bytes(seqA_bytes, byteorder='big')
+        key_string = "Alice".encode()+self.k1
         #send the message and hash of message(32 bytes each)
+        msg = self.get_encrypted_msg_with_integrity(seqA,key_string)
         self.socket.send(msg)
-        self.socket.send(sha_integrity.digest())
-        return seq
+        return seqA
     
-    def recv_seqB(self, msg):
+    def recv_seqB(self):
         '''
         Calculates the server side initial seq number 
         returns the server seq number as int
         '''
-        integrity = msg[33:]
-        msg = msg[:32]
-        sha_integrity = SHA256.new(msg+self.k2)
-        if  not sha_integrity.digest() == integrity:
-            print('message is tampered')
-        key_string = "Bob".encode()+self.k1
-        sha = SHA256.new(key_string)
-        #received seq number in bytes 
-        recv_seq = strxor(msg , sha.digest())
-        seq = self.bytes_to_int(recv_seq)
+        msg = self.socket.recv(64)
+        sha_integrity_key_string = "Bob".encode()+self.k1
+        seqB_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string)
+        seqB = int.from_bytes(seqB_bytes, byteorder='big')
         #verified till previous line ; we got back seq number
-        return seq
+        return seqB
 
        
     def close_connection(self):
         self.socket.close()
 
+    def get_encrypted_msg_with_integrity(self,msg,sha_key_string):
+        if(len(msg) != 32):
+            msg = pad(msg,32-len(msg))
+        encrypted_msg = strxor(SHA256.new(sha_key_string),msg)
+        integrity = SHA256.new(encrypted_msg+self.k2)
+        return encrypted_msg + integrity
 
-    def send_file(self,path):
+    def get_decrypted_msg(self,msg,sha_key_string):
+        integrity = msg[32:]
+        msg = msg[:32]
+        sha_integrity = SHA256.new(msg+self.k2)
+
+        if  not sha_integrity.digest() == integrity:
+            raise ValueError('message is tampered')
+        
+        #received seq number in bytes 
+        decrypted_msg = strxor(SHA256.new(sha_key_string),msg)
+        return decrypted_msg
+        
+    def send_command(self,command,seqA,seqB,path=""):
+        arr = path.split("/")
+        file_name = arr[len(arr)-1]
+        command_chunk = (command+file_name).encode()
+        command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
+        msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+seqA)
+        self.socket.send(msg)
+        recv_msg = self.socket.recv(64)
+        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB))
+        ack_length = msg[0:2]
+        ack_chunk = msg[2:ack_length]
+        if "Ok".encode() != ack_chunk:
+            print("Ack_Chunk: ", ack_chunk)
+            raise Exception("Command not received")
+
+
+    def send_file(self,path,seqA, seqB):
         # TODO: File transfer gets corrupted and the file retransmission is required in the middle of 
         # exchange
-        
-        #send 3rd message
-        seqA = self.send_seqA_num()
-        #receive 4th message
-        recv_seqB_msg = self.socket.recv(64)
-        seqB = self.recv_seqB(recv_seqB_msg)
+        self.send_command("Upload,",seqA,seqB,path)
+        seqA += 1
+        seqB += 1
         f_file = open(path, 'rb')
         file_data= f_file.read()
         f_file.close()
         #compress the data first
         # file_data = zlib.compress(file_data)
         #will encrypt and decrypt chunks at a time
-        chunk_size = 32
+        chunk_size = 30
         key_string = "Alice".encode()+self.k1
         offset = 0
         end_loop = False
@@ -169,19 +191,17 @@ class Client:
                     end_loop = True
                     chunk += pad(chunk,chunk_size - len(chunk))
 
+                chunk = self.int_to_bytes(len(chunk),2) + chunk
                 # Encryption using SHA
-                encrypted_msg = strxor(SHA256.new(key_string+ self.int_to_bytes(seqA)),chunk)
-                self.socket.send(len(chunk))
-                self.socket.send(encrypted_msg)
-                integrity = SHA256.new(encrypted_msg+self.int_to_bytes(k2))
-                self.socket.send(integrity)
+                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+seqA)
+                self.socket.send(msg)
 
                 # TODO: receive message from server anc check for integrity
                 recv_msg = self.socket.recv(64)
-                integrity = SHA256.new(recv_msg[33:]+self.int_to_bytes(k2))
-                msg = strxor(SHA256.new("Bob".encode()+self.k1+self.int_to_bytes(seqB)),recv_msg[:32])
-                
-                if msg != "Ok".encode():
+                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB))
+                ack_length = msg[0:2]
+                ack_chunk = msg[2:ack_length]
+                if ack_chunk != "Ok".encode():
                     trial_count -= 1
                 #Increase the offset by chunk size
                 seqA += 1
@@ -190,13 +210,20 @@ class Client:
             if trial_count == 0:
                 end_loop = True
             offset += chunk_size
-
+        
+        self.send_command("End",seqA,seqB)
+        return seqA,seqB
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
 
     def receive_file(self):
         pass
-
+    
+def user_interface ():
+    #display list of files and ask for upload or download 
+    #return command, filename
+    pass
+       
 if __name__ == '__main__':
     client = Client()
     client.initiate_connection()
@@ -214,7 +241,14 @@ if __name__ == '__main__':
         exit_flag = False
         while not exit_flag:
             # TODO: Step 3 and 4 inside send_file and different sequence numbers for each file
-            client.send_file('input_directory/izuku.jpg')
+                    #send 3rd message
+
+            # Exchange sequence numbers before every command
+            seqA = client.send_seqA_num()
+            #receive 4th message
+            seqB = client.recv_seqB()
+            path = 'client_directory/izuku.jpg'
+            seqA,seqB = client.send_file(path,seqA+1,seqB+1)
             exit_flag = input("Continue?") == "False"
     except Exception as e:
         print(str(e))
@@ -224,7 +258,7 @@ if __name__ == '__main__':
 # print('Encrypting file...')
 # rsa_key = RSA.importKey(public_key)
 # initial_string = rsa_key.encrypt(Na+"Alice")
-# f_file = open('input_directory/izuku.jpg', 'rb')
+# f_file = open('client_directory/izuku.jpg', 'rb')
 # data= f_file.read()
 # f_file.close()
 # encrypted_data = encrypt_file(public_key, data)
@@ -232,10 +266,10 @@ if __name__ == '__main__':
 # fd.write(encrypted_data)
 # fd.close()
 
-f = open("/home/rik/netsec/Secure-File-Transfer-Application/input_directory/izuku.jpg", "rb")
-# s.send('encrypted_img.jpg'.encode('utf-8'))
-l = f.read(1024)
-while (l):
-    s.send(l)
-    l = f.read(1024)
-# s.close()
+# f = open("/home/rik/netsec/Secure-File-Transfer-Application/client_directory/izuku.jpg", "rb")
+# # s.send('encrypted_img.jpg'.encode('utf-8'))
+# l = f.read(1024)
+# while (l):
+#     s.send(l)
+#     l = f.read(1024)
+# # s.close()
