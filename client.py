@@ -10,6 +10,7 @@ from Crypto.Hash import SHA256
 import zlib
 import uuid
 import random 
+import traceback
 
 class Client:
 
@@ -22,6 +23,7 @@ class Client:
         self.k3 = k3
         self.k4 = k4
         self.command_list = ["Upload","Download","List","End","Close"]
+
     def server_authentication(self,public_key):
         """
         Authenticates server to the client
@@ -37,9 +39,9 @@ class Client:
         rsa_public_key = RSA.importKey(public_key)
         rsa_key = PKCS1_OAEP.new(rsa_public_key)
         Na = uuid.uuid4()
-        print("Na ",Na)
+        print("Na ",Na.bytes)
         initial_conn_string = rsa_key.encrypt(Na.bytes+"Alice".encode())
-        print(initial_conn_string)
+        # print(initial_conn_string)
 
         # return initial_conn_string
         # self.socket.send(len(initial_conn_string))
@@ -57,7 +59,8 @@ class Client:
         #     print("Integrity cannot be verified\n Authentication unsuccessful" , str(e))
         sha = SHA256.new("Bob".encode() + Na.bytes).digest()
         Nb =  unpad(strxor(sha,msg),32)
-        session_key = strxor(Na,Nb)
+        print("Nb recv ",Nb)
+        session_key = strxor(Na.bytes,Nb)
 
         return session_key
 
@@ -81,7 +84,7 @@ class Client:
             Returns:
                 bytes 
         """
-        return data.to_bytes(length,byteorder='big')
+        return data.to_bytes(32,byteorder='big')[-length:]
 
     def initiate_connection(self):
         """
@@ -105,9 +108,10 @@ class Client:
         """
         seqA_bytes = get_random_bytes(32)
         seqA = int.from_bytes(seqA_bytes, byteorder='big')
+        print("seqA : ",seqA)
         key_string = "Alice".encode()+self.k1
         #send the message and hash of message(32 bytes each)
-        msg = self.get_encrypted_msg_with_integrity(seqA,key_string)
+        msg = self.get_encrypted_msg_with_integrity(seqA_bytes,key_string)
         self.socket.send(msg)
         return seqA
     
@@ -129,21 +133,21 @@ class Client:
 
     def get_encrypted_msg_with_integrity(self,msg,sha_key_string):
         if(len(msg) != 32):
-            msg = pad(msg,32-len(msg))
-        encrypted_msg = strxor(SHA256.new(sha_key_string),msg)
-        integrity = SHA256.new(encrypted_msg+self.k2)
+            msg = pad(msg,32)
+        encrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
+        integrity = SHA256.new(encrypted_msg+self.k2).digest()
         return encrypted_msg + integrity
 
     def get_decrypted_msg(self,msg,sha_key_string):
         integrity = msg[32:]
         msg = msg[:32]
-        sha_integrity = SHA256.new(msg+self.k2)
+        sha_integrity = SHA256.new(msg+self.k2).digest()
 
-        if  not sha_integrity.digest() == integrity:
+        if  not sha_integrity == integrity:
             raise ValueError('message is tampered')
         
         #received seq number in bytes 
-        decrypted_msg = strxor(SHA256.new(sha_key_string),msg)
+        decrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
         return decrypted_msg
         
     def send_command(self,command,seqA,seqB,path=""):
@@ -151,12 +155,12 @@ class Client:
         file_name = arr[len(arr)-1]
         command_chunk = (command+file_name).encode()
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
-        msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+seqA)
+        msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
         self.socket.send(msg)
         recv_msg = self.socket.recv(64)
-        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB))
-        ack_length = msg[0:2]
-        ack_chunk = msg[2:ack_length]
+        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
+        ack_length = self.bytes_to_int(msg[0:2])
+        ack_chunk = msg[2:2+ack_length]
         if "Ok".encode() != ack_chunk:
             print("Ack_Chunk: ", ack_chunk)
             raise Exception("Command not received")
@@ -183,7 +187,7 @@ class Client:
             #The chunk
             chunk = file_data[offset:offset + chunk_size]
             trial_count = 2
-            while trial_count > 0 and trial_count < 2:
+            while trial_count > 0 and trial_count <= 2:
                 #If the data chunk is less then the chunk size, then we need to add
                 #padding with " ". This indicates the we reached the end of the file
                 #so we end loop here
@@ -193,20 +197,21 @@ class Client:
 
                 chunk = self.int_to_bytes(len(chunk),2) + chunk
                 # Encryption using SHA
-                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+seqA)
+                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32))
                 self.socket.send(msg)
 
                 # TODO: receive message from server anc check for integrity
                 recv_msg = self.socket.recv(64)
-                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB))
-                ack_length = msg[0:2]
-                ack_chunk = msg[2:ack_length]
+                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
+                ack_length = self.bytes_to_int(msg[0:2])
+                ack_chunk = msg[2:2+ack_length]
                 if ack_chunk != "Ok".encode():
                     trial_count -= 1
                 #Increase the offset by chunk size
                 seqA += 1
                 seqB += 1
-
+                if trial_count == 2:
+                    break
             if trial_count == 0:
                 end_loop = True
             offset += chunk_size
@@ -233,6 +238,7 @@ if __name__ == '__main__':
     try: 
         session_key = client.server_authentication(public_key)
         session = client.bytes_to_int(session_key)
+        print("session: ", session)
         k1 = client.int_to_bytes(session + 2)
         k2 = client.int_to_bytes(session + 5)
         k3 = client.int_to_bytes(session + 7)
@@ -252,6 +258,7 @@ if __name__ == '__main__':
             exit_flag = input("Continue?") == "False"
     except Exception as e:
         print(str(e))
+        traceback.print_exc()
     finally:
         client.close_connection()
 
