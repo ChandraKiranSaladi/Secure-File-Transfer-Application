@@ -177,7 +177,16 @@ class Server:
             elif command == "Upload":
                 seqA, seqB = self.receive_file('./server_directory/'+file_name,seqA,seqB)
             elif command == "List":
+                filename_list = ""
+                dir_obj =  os.scandir()
+                for ele in dir_obj:
+                    filename_list = filename_list + ele.name + ';'
+                self.send_list (filename_string.encode(), seqA, seqB)                
+                
+                
+
                 # TODO: Send files to Client
+
                 pass
             elif command == "Exit":
                 return
@@ -218,20 +227,31 @@ class Server:
         msg = self.get_decrypted_msg(msg,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
         msg_length = self.bytes_to_int(msg[0:2])
         msg_chunk = msg[2:2+msg_length].decode()
-        arr,file_name = msg_chunk.split(",")
+        msg_list = msg_chunk.split(",")
+
+        arr = msg_list [0]
         command = arr
+        if command == "Download" or command == "Upload":
+            filename = msg_list[1]
+
+
+        #arr,file_name = msg_chunk.split(",")
+        #command = arr 
         if command not in self.command_list:
             print("Unknown Command")
             # TODO: If command is unknown handle it by sending command Unknown
             # self.send_command(seqA,seqB)
-        return command,file_name
+        if command == "Download" or command == "Upload":
+            return command,filename
+        else:
+            return command, ""
 
     def send_command(self,command,seqA,seqB):
         command_chunk = command.encode()
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
         msg = self.get_encrypted_msg_with_integrity(command_chunk,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
         self.socket.send(msg)
-
+        
         # if command == "End"
         # recv_msg = self.socket.recv(64)
         # msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqA))
@@ -253,7 +273,7 @@ class Server:
         # file_data = zlib.compress(file_data)
         #will encrypt and decrypt chunks at a time
         chunk_size = 30
-        key_string = "Alice".encode()+self.k1
+        key_string = "Bob".encode()+self.k1
         offset = 0
         end_loop = False
 
@@ -293,6 +313,55 @@ class Server:
         return seqA,seqB
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
+
+        def send_list (self, filename_string, seqA, seqB):
+            '''
+            Send a encrypted string of list of files presesnt in server to client
+            returns seqA, seqB
+            '''
+            chunk_size = 30
+            key_string = "Bob".encode()+self.k1
+            offset = 0
+            end_loop = False
+            while not end_loop:
+                #The chunk
+                chunk = filename_string[offset:offset + chunk_size]
+                trial_count = 2
+                while trial_count > 0 and trial_count < 2:
+                    #If the data chunk is less then the chunk size, then we need to add
+                    #padding with " ". This indicates the we reached the end of the file
+                    #so we end loop here
+                    if len(chunk) % chunk_size != 0:
+                        end_loop = True
+                        chunk += pad(chunk,chunk_size - len(chunk))
+
+                    chunk = self.int_to_bytes(len(chunk),2) + chunk
+                    # Encryption using SHA
+                    msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32))
+                    self.socket.send(msg)
+
+                    # TODO: receive message from server anc check for integrity
+                    recv_msg = self.socket.recv(64)
+                    msg = self.get_decrypted_msg(recv_msg,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
+                    ack_length = msg[0:2]
+                    ack_chunk = msg[2:ack_length]
+                    if ack_chunk != "Ok".encode():
+                        trial_count -= 1
+                    #Increase the offset by chunk size
+                    seqA += 1
+                    seqB += 1
+                
+
+                if trial_count == 0:
+                    end_loop = True
+                offset += chunk_size
+
+            self.send_command("End",seqA,seqB)
+            return seqA,seqB
+
+
+        
+
 
 
 if __name__ == '__main__':

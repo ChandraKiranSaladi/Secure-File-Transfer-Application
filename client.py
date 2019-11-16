@@ -151,8 +151,10 @@ class Client:
         return decrypted_msg
         
     def send_command(self,command,seqA,seqB,path=""):
-        arr = path.split("/")
-        file_name = arr[len(arr)-1]
+        file_name = ""
+        if  path != "":
+            arr = path.split("/")
+            file_name = arr[len(arr)-1]
         command_chunk = (command+file_name).encode()
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
         msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
@@ -216,17 +218,90 @@ class Client:
                 end_loop = True
             offset += chunk_size
         
-        self.send_command("End",seqA,seqB)
+        self.send_command("End,",seqA,seqB)
         return seqA,seqB
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
 
     def receive_file(self):
         pass
+    def receive_list(self, seqA,seqB):
+        '''
+        Receives encrypted chunks of list of filenames from server
+        Decrypts these chunks and get back the original string having file names  
+        '''
+        filename_data = b''
+        
+        while True:
+            msg = self.get_decrypted_msg(self.socket.recv(64),"Bob".encode()+k1+self.int_to_bytes(seqA,32))
+            chunk_length = self.bytes_to_int(msg[0:2])
+            chunk = msg[2:2+chunk_length]
+            try:
+                if chunk[0:3].decode() == "End":
+                    self.send_command("Ok",seqA,seqB)
+                    seqA += 1
+                    seqB += 1
+                    break
+            except UnicodeDecodeError:
+                pass
+            self.send_command("Ok",seqA,seqB)
+            filename_data += chunk
+            seqA += 1
+            seqB += 1
+        
+        return filename_data.decode()
+
     
-def user_interface ():
-    #display list of files and ask for upload or download 
-    #return command, filename
+def user_interface (self, seqA, seqB):
+    '''
+    display list of files and ask for upload or download 
+    return command, filename
+    '''
+     
+    print('Please choose one option: ')
+    print('1. List all server files')
+    print('2. List all client files')
+    print('3. Upload')
+    print('4. Download')
+    choice = input('Enter your choice :')
+    if choice == '1':
+        self.send_command(self,"List,",seqA,seqB)
+        filename_string = self.receive_list(self, seqA,seqB)
+        file_list =  filename_string.split(';')
+        print('Listing server file names: ')
+        for i in range (len(file_list)-1):
+            print(file_list[i])
+        return "path not required"
+        
+    elif choice == '2':
+        filename_list = []
+        dir_obj =  os.scandir()
+        print('Listing client file names: ')
+        for ele in dir_obj:    
+            print(ele.name)
+        return "path not required"
+
+    elif choice == '3':
+        upload_filepath = input('enter path to file to be uploaded :')
+        if upload_filepath= "":
+            print('file path cannot be empty')
+        else:
+            return upload_filepath
+    elif choice == '4':
+        download_filename = input ('enter file name to be downloaded')
+        if download_filename= "":
+            print('file name cannot be empty')
+        else:
+            return download_filepath
+        
+
+
+
+
+        
+
+
+        
     pass
        
 if __name__ == '__main__':
@@ -253,8 +328,25 @@ if __name__ == '__main__':
             seqA = client.send_seqA_num()
             #receive 4th message
             seqB = client.recv_seqB()
-            path = 'client_directory/izuku.jpg'
-            seqA,seqB = client.send_file(path,seqA+1,seqB+1)
+            #path = 'client_directory/izuku.jpg'
+            
+            path = user_interface (self, seqA, seqB)
+
+            if path == "path not required":
+                #path not required is returned in case the command is not upload or download
+                pass
+            elif path == "":
+                #this condition is reached if client wants to upload or download but path is empty
+                print('file path cannot be empty')
+                
+            elif os.path.isfile(path):
+                #check if the path or file is valid
+                #this condition is reached if it is a upload or download and path/filename is non-empty
+                
+                seqA,seqB = client.send_file(path,seqA+1,seqB+1)
+            else:
+                raise Exception('wrong path to file entered')
+
             exit_flag = input("Continue?") == "False"
     except Exception as e:
         print(str(e))
