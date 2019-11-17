@@ -98,6 +98,7 @@ class Server:
         """
         seqB_bytes = get_random_bytes(32)
         seqB = int.from_bytes(seqB_bytes, byteorder='big')
+        print("sending seqB ",seqB)
         key_string = "Bob".encode()+self.k1
         #send the message and hash of message(32 bytes each)
         msg = self.get_encrypted_msg_with_integrity(seqB_bytes,key_string)
@@ -113,6 +114,7 @@ class Server:
         sha_integrity_key_string = "Alice".encode()+self.k1
         seqA_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string)
         seqA = int.from_bytes(seqA_bytes, byteorder='big')
+        print("seqA recv: ",seqA)
         #verified till previous line ; we got back seq number
         return seqA
 
@@ -215,6 +217,7 @@ class Server:
                 pass
             self.send_command("Ok",seqA,seqB)
             file_data += chunk
+            # print(" len file_data: ",len(file_data))
             seqA += 1
             seqB += 1
         f = open(path,"wb")
@@ -251,21 +254,19 @@ class Server:
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
         msg = self.get_encrypted_msg_with_integrity(command_chunk,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
         self.socket.send(msg)
-        
-        # if command == "End"
-        # recv_msg = self.socket.recv(64)
-        # msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqA))
-        # ack_length = msg[0:2]
-        # ack_chunk = msg[2:ack_length]
-        # if "Ok".encode() != ack_chunk:
-        #     print("Ack_Chunk: ", ack_chunk)
-        #     raise Exception("Command not received")
+
+        if command == "End":
+            recv_msg = self.socket.recv(64)
+            msg = self.get_decrypted_msg(recv_msg,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
+            ack_length = self.bytes_to_int(msg[0:2])
+            ack_chunk = msg[2:2+ack_length]
+            if "Ok".encode() != ack_chunk:
+                print("Ack_Chunk: ", ack_chunk)
+                raise Exception("Command not received")
 
     def send_file(self,path,seqA, seqB):
         # TODO: File transfer gets corrupted and the file retransmission is required in the middle of 
         # exchange
-        # TODO: modify this method for Server
-        # self.send_command("Upload,",path)
         f_file = open(path, 'rb')
         file_data= f_file.read()
         f_file.close()
@@ -280,35 +281,35 @@ class Server:
         while not end_loop:
             #The chunk
             chunk = file_data[offset:offset + chunk_size]
+            print("Offset ",offset)
             trial_count = 2
-            while trial_count > 0 and trial_count < 2:
+            while trial_count > 0 and trial_count <= 2:
                 #If the data chunk is less then the chunk size, then we need to add
                 #padding with " ". This indicates the we reached the end of the file
                 #so we end loop here
-                if len(chunk) % chunk_size != 0:
+                if len(chunk) % chunk_size != 0 or len(chunk) == 0:
                     end_loop = True
-                    chunk += pad(chunk,chunk_size - len(chunk))
 
                 chunk = self.int_to_bytes(len(chunk),2) + chunk
                 # Encryption using SHA
-                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32))
+                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqB,32))
                 self.socket.send(msg)
 
-                # TODO: receive message from server anc check for integrity
                 recv_msg = self.socket.recv(64)
                 msg = self.get_decrypted_msg(recv_msg,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
-                ack_length = msg[0:2]
-                ack_chunk = msg[2:ack_length]
+                ack_length = self.bytes_to_int(msg[0:2])
+                ack_chunk = msg[2:2+ack_length]
                 if ack_chunk != "Ok".encode():
                     trial_count -= 1
                 #Increase the offset by chunk size
                 seqA += 1
                 seqB += 1
-
+                if trial_count == 2:
+                    break
             if trial_count == 0:
                 end_loop = True
             offset += chunk_size
-
+        
         self.send_command("End",seqA,seqB)
         return seqA,seqB
         #Base 64 encode the encrypted file
