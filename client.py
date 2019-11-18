@@ -223,10 +223,10 @@ class Client:
         key_string = "Alice".encode()+self.k1
         offset = 0
         end_loop = False
-        print("File length: ",len(file_data))
+        print("File length: ",len(data))
         while not end_loop:
             #The chunk
-            chunk = file_data[offset:offset + chunk_size]
+            chunk = data[offset:offset + chunk_size]
             # print("Offset ",offset)
             trial_count = 2
             while trial_count > 0 and trial_count <= 2:
@@ -309,8 +309,8 @@ if __name__ == '__main__':
         k3 = client.int_to_bytes(session + 7)
         k4 = client.int_to_bytes(session + 9)
         client.set_keys(k1,k2,k3,k4)
+        server_file_list = []
         while True:
-            server_file_list = []
             print('Please choose an option: ')
             print('1. List all server files')
             print('2. List all client files')
@@ -333,7 +333,7 @@ if __name__ == '__main__':
                     print(file_name)
 
             elif choice == 3:
-                path = input('Enter File Name :')
+                path = "./client_directory/"+input('Enter File Name :')
                 if not os.path.isfile(path):
                     print('File not found')
                 else:
@@ -349,9 +349,9 @@ if __name__ == '__main__':
                     print('FIle not found in Server')
                 else:
                     seqA, seqB = client.send_seqA_receive_seqB()
-                    client.send_command("Download,",seqA+1,seqB+1,file_name)
+                    client.send_command("Download,",seqA+1,seqB+1,download_filename)
                     file_data = client.receive_data(seqA+2,seqB+2)
-                    f = open('./client_directory/'+file_name,'wb')
+                    f = open('./client_directory/'+download_filename,'wb')
                     f.write(file_data)
                     f.close()
 

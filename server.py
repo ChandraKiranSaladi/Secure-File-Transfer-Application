@@ -89,13 +89,21 @@ class Server:
     # conn.send(rsa_key.encrypt(msg))
 
 
-    def send_seqB_num(self):
+    def recv_seqA_send_seqB(self):
         """
-        Generates random sequence number and send it as 
-        keyed hash
-        msg1 : send seq number using keyed hash  
-        msg2: for server side to check integrity of msg1
+        Receives seqA: random number from client and sends seqB
+        as encrypted message to server
+
+        Returns:
+            - seqA : 32 byte integer
+            - seqB : 32 byte integer
         """
+        msg = self.socket.recv(64)
+        sha_integrity_key_string = "Alice".encode()+self.k1
+        seqA_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string)
+        seqA = int.from_bytes(seqA_bytes, byteorder='big')
+        print("seqA recv: ",seqA)
+
         seqB_bytes = get_random_bytes(32)
         seqB = int.from_bytes(seqB_bytes, byteorder='big')
         print("sending seqB ",seqB)
@@ -103,21 +111,7 @@ class Server:
         #send the message and hash of message(32 bytes each)
         msg = self.get_encrypted_msg_with_integrity(seqB_bytes,key_string)
         self.socket.send(msg)
-        return seqB
-    
-    def recv_seqA(self):
-        '''
-        Calculates the server side initial seq number 
-        returns the server seq number as int
-        '''
-        msg = self.socket.recv(64)
-        sha_integrity_key_string = "Alice".encode()+self.k1
-        seqA_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string)
-        seqA = int.from_bytes(seqA_bytes, byteorder='big')
-        print("seqA recv: ",seqA)
-        #verified till previous line ; we got back seq number
-        return seqA
-
+        return seqA, seqB
        
     def close_connection(self):
         self.socket.close()
@@ -164,32 +158,35 @@ class Server:
         return data.to_bytes(length,byteorder='big')[-length:]
     
     def respond_to_client_command(self):
+
         while True:
-            seqA = self.recv_seqA()
-            seqB = self.send_seqB_num()
+            seqA,seqB = self.recv_seqA_send_seqB()
             seqA += 1
             seqB += 1
             command,file_name = self.get_command(self.socket.recv(64),seqA,seqB)
+
             if command in self.command_list and command != "Exit":
                 self.send_command("Ok",seqA,seqB)
                 seqA += 1
                 seqB += 1
+
             if command == "Download":
-                seqA, seqB = self.send_file('./server_directory/'+file_name,seqA,seqB)
+                f = open("./server_directory/"+file_name, 'rb')
+                file_data= f.read()
+                f.close()
+                seqA, seqB = self.send_data(file_data,seqA,seqB)
+
             elif command == "Upload":
-                seqA, seqB = self.receive_file('./server_directory/'+file_name,seqA,seqB)
+                data = self.receive_data(seqA,seqB)
+                f = open('./server_directory/'+file_name,"wb")
+                f.write(data)
+                f.close()
+
             elif command == "List":
-                filename_list = ""
-                dir_obj =  os.scandir()
-                for ele in dir_obj:
-                    filename_list = filename_list + ele.name + ';'
-                self.send_list (filename_string.encode(), seqA, seqB)                
+                file_list =  os.listdir("./server_directory")
+                file_list = ";".join([file_name for file_name in file_list])
+                self.send_data(file_list.encode(), seqA, seqB)                
                 
-                
-
-                # TODO: Send files to Client
-
-                pass
             elif command == "Exit":
                 return
             else:
@@ -201,8 +198,8 @@ class Server:
             # Receive or send
             # if close then continue
 
-    def receive_file(self,path,seqA,seqB):
-        file_data = b''
+    def receive_data(self,seqA,seqB):
+        data = b''
         while True:
             msg = self.get_decrypted_msg(self.socket.recv(64),"Alice".encode()+k1+self.int_to_bytes(seqA,32))
             chunk_length = self.bytes_to_int(msg[0:2])
@@ -216,14 +213,13 @@ class Server:
             except UnicodeDecodeError:
                 pass
             self.send_command("Ok",seqA,seqB)
-            file_data += chunk
+            data += chunk
             # print(" len file_data: ",len(file_data))
             seqA += 1
             seqB += 1
-        f = open(path,"wb")
-        f.write(file_data)
-        f.close()
-        return seqA, seqB
+        
+        return data
+
 
     def get_command(self,msg,seqA,seqB):
         # TODO: Account for listing Directories
@@ -264,12 +260,10 @@ class Server:
                 print("Ack_Chunk: ", ack_chunk)
                 raise Exception("Command not received")
 
-    def send_file(self,path,seqA, seqB):
+    def send_data(self,data,seqA, seqB):
         # TODO: File transfer gets corrupted and the file retransmission is required in the middle of 
         # exchange
-        f_file = open(path, 'rb')
-        file_data= f_file.read()
-        f_file.close()
+
         #compress the data first
         # file_data = zlib.compress(file_data)
         #will encrypt and decrypt chunks at a time
@@ -280,7 +274,7 @@ class Server:
 
         while not end_loop:
             #The chunk
-            chunk = file_data[offset:offset + chunk_size]
+            chunk = data[offset:offset + chunk_size]
             print("Offset ",offset)
             trial_count = 2
             while trial_count > 0 and trial_count <= 2:
@@ -314,55 +308,6 @@ class Server:
         return seqA,seqB
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
-
-        def send_list (self, filename_string, seqA, seqB):
-            '''
-            Send a encrypted string of list of files presesnt in server to client
-            returns seqA, seqB
-            '''
-            chunk_size = 30
-            key_string = "Bob".encode()+self.k1
-            offset = 0
-            end_loop = False
-            while not end_loop:
-                #The chunk
-                chunk = filename_string[offset:offset + chunk_size]
-                trial_count = 2
-                while trial_count > 0 and trial_count < 2:
-                    #If the data chunk is less then the chunk size, then we need to add
-                    #padding with " ". This indicates the we reached the end of the file
-                    #so we end loop here
-                    if len(chunk) % chunk_size != 0:
-                        end_loop = True
-                        chunk += pad(chunk,chunk_size - len(chunk))
-
-                    chunk = self.int_to_bytes(len(chunk),2) + chunk
-                    # Encryption using SHA
-                    msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32))
-                    self.socket.send(msg)
-
-                    # TODO: receive message from server anc check for integrity
-                    recv_msg = self.socket.recv(64)
-                    msg = self.get_decrypted_msg(recv_msg,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
-                    ack_length = msg[0:2]
-                    ack_chunk = msg[2:ack_length]
-                    if ack_chunk != "Ok".encode():
-                        trial_count -= 1
-                    #Increase the offset by chunk size
-                    seqA += 1
-                    seqB += 1
-                
-
-                if trial_count == 0:
-                    end_loop = True
-                offset += chunk_size
-
-            self.send_command("End",seqA,seqB)
-            return seqA,seqB
-
-
-        
-
 
 
 if __name__ == '__main__':
