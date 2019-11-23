@@ -126,13 +126,28 @@ class Client:
         #send the message and hash of message(32 bytes each)
         msg = self.get_encrypted_msg_with_integrity(seqA_bytes,key_string)
         self.socket.send(msg)
+ 
         msg = self.socket.recv(64)
         sha_integrity_key_string = "Bob".encode()+self.k1
-        seqB_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string)
-        seqB = int.from_bytes(seqB_bytes, byteorder='big')
-        print("seqB recv", seqB)
-        #verified till previous line ; we got back seq number
-        return seqA,seqB
+        seqB_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string,None,None)
+        
+        #if the sent seq message is tampered, socket receives
+        #"not_ok" ack and hence closes connection 
+        #if sent seq message is not tampered, socket receives seqB 
+        ack_length = self.bytes_to_int(seqB_bytes[0:2])
+        ack_chunk = seqB_bytes[2:2+ack_length]
+        #handling tampered message
+        if ack_chunk == "Not_Ok".encode():
+            print('send_seqA_receive_seqB:tampered so closing conn')
+            self.close_connection()
+            exit(1)
+        else:
+            seqB = int.from_bytes(seqB_bytes, byteorder='big')
+            print("seqB recv", seqB)
+            self.send_command("Ok", None, None)
+            
+            #verified till previous line ; we got back seq number
+            return seqA,seqB
     
       
     def close_connection(self):
@@ -156,7 +171,7 @@ class Client:
         return encrypted_msg + integrity
 
 
-    def get_decrypted_msg(self,msg,sha_key_string):
+    def get_decrypted_msg(self,msg,sha_key_string, seqA, seqB):
         """
             Checks integrity and decrypts message
 
@@ -169,11 +184,15 @@ class Client:
         integrity = msg[32:]
         msg = msg[:32]
         sha_integrity = SHA256.new(msg+self.k2).digest()
-
-        if  not sha_integrity == integrity:
-            raise ValueError('message is tampered')
         
+        if  not sha_integrity == integrity:
+            print('closing connection since tampered')
+            self.send_command("Not_Ok",seqA,seqB)
+            self.close_connection()
+            raise ValueError('message is tampered')
+            exit(1)
         #received seq number in bytes 
+
         decrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
         return decrypted_msg
         
@@ -191,14 +210,28 @@ class Client:
         file_name = arr[len(arr)-1]
         command_chunk = (command+file_name).encode()
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
-        msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
+        if seqA == None and seqB==None:
+            msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1)
+           
+
+        else:
+            msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+self.k1+self.int_to_bytes(seqA,32))
         self.socket.send(msg)
         if command == "Ok":
             return
+        if command == "Not_Ok":
+            return
+        if command == "Exit":
+            return
         recv_msg = self.socket.recv(64)
-        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
+        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32),seqA, seqB)
         ack_length = self.bytes_to_int(msg[0:2])
         ack_chunk = msg[2:2+ack_length]
+        #handling sent tanpered message
+        if ack_chunk == "Not_Ok".encode():
+            print('tampered so closing conn')
+            self.close_connection()
+            exit(1)
         if "Ok".encode() != ack_chunk:
             print("Ack_Chunk: ", ack_chunk)
             raise Exception("Command not received")
@@ -240,11 +273,18 @@ class Client:
                 # Encryption using SHA
                 msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32))
                 self.socket.send(msg)
-
+                
                 recv_msg = self.socket.recv(64)
-                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32))
+                
+                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+self.k1+self.int_to_bytes(seqB,32),seqA, seqB)
                 ack_length = self.bytes_to_int(msg[0:2])
                 ack_chunk = msg[2:2+ack_length]
+                #handling for tampered message while sending data
+                if ack_chunk == "Not_Ok".encode():
+                    print('tampered so closing conn')
+                    self.close_connection()
+                    exit(1)
+                    
                 if ack_chunk != "Ok".encode():
                     trial_count -= 1
                 #Increase the offset by chunk size
@@ -276,7 +316,7 @@ class Client:
         
         data = b''
         while True:
-            msg = self.get_decrypted_msg(self.socket.recv(64),"Bob".encode()+k1+self.int_to_bytes(seqB,32))
+            msg = self.get_decrypted_msg(self.socket.recv(64),"Bob".encode()+k1+self.int_to_bytes(seqB,32),seqA, seqB)
             chunk_length = self.bytes_to_int(msg[0:2])
             chunk = msg[2:2+chunk_length]
             try:
@@ -310,6 +350,7 @@ if __name__ == '__main__':
         k4 = client.int_to_bytes(session + 9)
         client.set_keys(k1,k2,k3,k4)
         server_file_list = []
+        
         while True:
             print('Please choose an option: ')
             print('1. List all server files')
@@ -357,6 +398,7 @@ if __name__ == '__main__':
 
             elif choice == 5:
                 print("Exiting Application")
+                client.send_command("Exit", None, None)
                 break
             else:
                 print("Choose valid options bruh")
