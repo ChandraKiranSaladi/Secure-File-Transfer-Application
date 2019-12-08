@@ -1,2 +1,4 @@
 .vscode/settings.json
 .vscode/launch.json
+server_directory/*
+client_directory/*

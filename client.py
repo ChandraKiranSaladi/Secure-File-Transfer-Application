@@ -1,4 +1,5 @@
 import socket
+import datetime
 import os
 import sys
 from Crypto.PublicKey import RSA
@@ -122,56 +123,42 @@ class Client:
         seqA_bytes = get_random_bytes(32)
         seqA = int.from_bytes(seqA_bytes, byteorder='big')
         print("sending seqA : ",seqA)
-        key_string = "Alice".encode()+self.k1
+        sha_key_string = "Alice".encode()+self.k1
+        sha_integrity_key_string = self.k2
         #send the message and hash of message(32 bytes each)
-        msg = self.get_encrypted_msg_with_integrity(seqA_bytes,key_string, self.k2)
+        msg = self.get_encrypted_msg_with_integrity(seqA_bytes,sha_key_string, sha_integrity_key_string)
         self.socket.send(msg)
- 
         msg = self.socket.recv(64)
-        sha_integrity_key_string = "Bob".encode()+self.k1
-        seqB_bytes = self.get_decrypted_msg(msg,sha_integrity_key_string,None,None, self.k1,self.k2)
-        
-        #if the sent seq message is tampered, socket receives
-        #"not_ok" ack and hence closes connection 
-        #if sent seq message is not tampered, socket receives seqB 
-        ack_length = self.bytes_to_int(seqB_bytes[0:2])
-        ack_chunk = seqB_bytes[2:2+ack_length]
-        #handling tampered message
-        if ack_chunk == "Not_Ok".encode():
-            print('send_seqA_receive_seqB:tampered so closing conn')
-            self.close_connection()
-            exit(1)
-        else:
-            seqB = int.from_bytes(seqB_bytes, byteorder='big')
-            print("seqB recv", seqB)
-            self.send_command("Ok", None, None, self.k1, self.k2)
-            
-            #verified till previous line ; we got back seq number
-            return seqA,seqB
+        sha_key_string = "Bob".encode()+self.k1
+        seqB_bytes = self.get_decrypted_msg(msg,sha_key_string,sha_integrity_key_string)
+        seqB = int.from_bytes(seqB_bytes, byteorder='big')
+        print("seqB recv", seqB)
+        #verified till previous line ; we got back seq number
+        return seqA,seqB
     
       
     def close_connection(self):
         self.socket.close()
 
 
-    def get_encrypted_msg_with_integrity(self,msg,sha_key_string,  int_key):
+    def get_encrypted_msg_with_integrity(self,msg,sha_key_string,sha_integrity_key_string):
         """
             Generates encrypted message and integrity information in bytes
 
             - msg: Input message in bytes
             - sha_key_string : key in bytes
-
+            - sha_integrity_key_string: Integrity key in bytes
             Returns:
                 - bytes : 64 byte message with encrypted and integrity messages 
         """
         if(len(msg) != 32):
             msg = pad(msg,32)
         encrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
-        integrity = SHA256.new(encrypted_msg+int_key).digest()
+        integrity = SHA256.new(msg+sha_integrity_key_string).digest()
         return encrypted_msg + integrity
 
 
-    def get_decrypted_msg(self,msg,sha_key_string, seqA, seqB,en_key, int_key):
+    def get_decrypted_msg(self,msg,sha_key_string,sha_integrity_key_string):
         """
             Checks integrity and decrypts message
 
@@ -183,67 +170,55 @@ class Client:
         """
         integrity = msg[32:]
         msg = msg[:32]
-        sha_integrity = SHA256.new(msg+int_key).digest()
-        
-        if  not sha_integrity == integrity:
-            print('closing connection since tampered')
-            self.send_command("Not_Ok",seqA,seqB, en_key, int_key)
-            self.close_connection()
-            raise ValueError('message is tampered')
-            exit(1)
-        #received seq number in bytes 
-
         decrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
+
+        sha_integrity = SHA256.new(decrypted_msg+sha_integrity_key_string).digest()
+
+        if  not sha_integrity == integrity:
+            print("Message is tampered")
+            raise ValueError('message is tampered')
+
         return decrypted_msg
         
 
-    def send_command(self,command,seqA,seqB,en_key, int_key, path=""):
+    def send_command(self,command,seqA,seqB,encryption_key,integrity_key,path=""):
         """
             Sends command to the Server and waits for acknowledgement
 
             - command: str
             - seqA : int
             - seqB : int
+            - encryption_key : key for encryption
+            - decryption_key : key for decryption
 
         """
         arr = path.split("/")
         file_name = arr[len(arr)-1]
         command_chunk = (command+file_name).encode()
         command_chunk = self.int_to_bytes(len(command_chunk),2) + command_chunk
-        if seqA == None and seqB==None:
-            msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+en_key, int_key)
-           
-
-        else:
-            msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+en_key+self.int_to_bytes(seqA,32), int_key)
+        msg = self.get_encrypted_msg_with_integrity(command_chunk,"Alice".encode()+encryption_key+self.int_to_bytes(seqA,32),integrity_key+self.int_to_bytes(seqA,32))
         self.socket.send(msg)
         if command == "Ok":
             return
-        if command == "Not_Ok":
-            return
-        if command == "Exit":
-            return
         recv_msg = self.socket.recv(64)
-        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+en_key+self.int_to_bytes(seqB,32),seqA, seqB,en_key, int_key)
+        msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+encryption_key+self.int_to_bytes(seqB,32),integrity_key+self.int_to_bytes(seqB,32))
         ack_length = self.bytes_to_int(msg[0:2])
         ack_chunk = msg[2:2+ack_length]
-        #handling sent tanpered message
-        if ack_chunk == "Not_Ok".encode():
-            print('tampered so closing conn')
-            self.close_connection()
-            exit(1)
         if "Ok".encode() != ack_chunk:
             print("Ack_Chunk: ", ack_chunk)
+            print("Command not received")
             raise Exception("Command not received")
 
 
-    def send_data(self,data,seqA, seqB, en_key, int_key):
+    def send_data(self,data,seqA, seqB, encryption_key, integrity_key):
         """
             Sends data to server in encrypted channel
 
             - data: bytes 
             - seqA: int 
             - seqB: int
+            - encryption_key : key for encryption
+            - decryption_key : key for decryption
 
         """
 
@@ -253,7 +228,7 @@ class Client:
         # file_data = zlib.compress(file_data)
         #will encrypt and decrypt chunks at a time
         chunk_size = 30
-        key_string = "Alice".encode()+en_key
+        key_string = "Alice".encode()+encryption_key
         offset = 0
         end_loop = False
         print("File length: ",len(data))
@@ -271,20 +246,13 @@ class Client:
 
                 chunk = self.int_to_bytes(len(chunk),2) + chunk
                 # Encryption using SHA
-                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32), int_key)
+                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqA,32), integrity_key+self.int_to_bytes(seqA,32))
                 self.socket.send(msg)
                 
                 recv_msg = self.socket.recv(64)
-                
-                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+en_key+self.int_to_bytes(seqB,32),seqA, seqB, en_key,int_key)
+                msg = self.get_decrypted_msg(recv_msg,"Bob".encode()+encryption_key+self.int_to_bytes(seqB,32),integrity_key+self.int_to_bytes(seqB,32))
                 ack_length = self.bytes_to_int(msg[0:2])
                 ack_chunk = msg[2:2+ack_length]
-                #handling for tampered message while sending data
-                if ack_chunk == "Not_Ok".encode():
-                    print('tampered so closing conn')
-                    self.close_connection()
-                    exit(1)
-                    
                 if ack_chunk != "Ok".encode():
                     trial_count -= 1
                 #Increase the offset by chunk size
@@ -296,18 +264,20 @@ class Client:
                 end_loop = True
             offset += chunk_size
         
-        self.send_command("End,",seqA,seqB, en_key, int_key)
+        self.send_command("End,",seqA,seqB, encryption_key, integrity_key)
         # return seqA,seqB
         #Base 64 encode the encrypted file
         # return base64.b64encode(encrypted)
 
 
-    def receive_data(self,seqA,seqB, en_key, int_key):
+    def receive_data(self,seqA,seqB, encryption_key, integrity_key):
         """
             Receives data from Server in encrypted channel
 
             - seqA : int
             - seqB : int
+            - encryption_key : key for encryption
+            - decryption_key : key for decryption
 
             Returns:
                 - data -> bytes 
@@ -315,22 +285,27 @@ class Client:
         """
         
         data = b''
+        count = 0
+        start_time = datetime.datetime.now()
         while True:
-            msg = self.get_decrypted_msg(self.socket.recv(64),"Bob".encode()+en_key+self.int_to_bytes(seqB,32),seqA, seqB,en_key, int_key)
+            msg = self.get_decrypted_msg(self.socket.recv(64),"Bob".encode()+encryption_key+self.int_to_bytes(seqB,32), integrity_key+self.int_to_bytes(seqB,32))
             chunk_length = self.bytes_to_int(msg[0:2])
             chunk = msg[2:2+chunk_length]
+            if count%100000 == 0:
+                print("Time taken for {} is {}".format(count*32,datetime.datetime.now()-start_time))
             try:
                 if chunk[0:3].decode() == "End":
-                    self.send_command("Ok",seqA,seqB, en_key, int_key)
+                    self.send_command("Ok",seqA,seqB, encryption_key, integrity_key)
                     seqA += 1
                     seqB += 1
                     break
             except UnicodeDecodeError:
                 pass
-            self.send_command("Ok",seqA,seqB, en_key, int_key)
+            self.send_command("Ok",seqA,seqB, encryption_key, integrity_key)
             data += chunk
             seqA += 1
             seqB += 1
+            count += 1
         return data
     
 
@@ -358,11 +333,7 @@ if __name__ == '__main__':
             print('3. Upload')
             print('4. Download')
             print('5. Exit')
-            try:
-                choice = int(input('Enter your choice :'))
-            except ValueError:
-                print('Invalid option. Please enter correct option number')
-                continue
+            choice = int(input('Enter your choice :'))
 
             if choice == 1:
                 seqA, seqB = client.send_seqA_receive_seqB()
@@ -370,8 +341,7 @@ if __name__ == '__main__':
                 filename_string = client.receive_data(seqA+2,seqB+2, k1,k2).decode()
                 server_file_list =  filename_string.split(';')
                 print('Listing server file names: ')
-                for file_name in server_file_list:
-                    print(file_name)
+                print(server_file_list)
                 
             elif choice == 2:
                 for file_name in os.listdir('./client_directory'):
@@ -386,8 +356,9 @@ if __name__ == '__main__':
                     client.send_command("Upload,",seqA+1,seqB+1,k1, k2, path)
                     f_file = open(path, 'rb')
                     data = f_file.read()
-                    #using k1 and k2 for upload 
+                    start_time = datetime.datetime.now()
                     client.send_data(data,seqA+2,seqB+2, k1, k2)
+                    print("Time taken for {} is {}".format(len(data),datetime.datetime.now()-start_time))
 
             elif choice == 4:
                 download_filename = input ('Enter file name ')
@@ -397,20 +368,22 @@ if __name__ == '__main__':
                     seqA, seqB = client.send_seqA_receive_seqB()
                     client.send_command("Download,",seqA+1,seqB+1, k1, k2,download_filename)
                     #using k3 and k4 for download 
+                    start_time = datetime.datetime.now()
                     file_data = client.receive_data(seqA+2,seqB+2, k3, k4)
+                    print("Time taken for {} is {}".format(len(file_data),datetime.datetime.now()-start_time))
                     f = open('./client_directory/'+download_filename,'wb')
                     f.write(file_data)
                     f.close()
 
             elif choice == 5:
                 print("Exiting Application")
-                client.send_command("Exit", None, None, k1, k2)
                 break
             else:
                 print("Choose valid options bruh")
 
     except Exception as e:
-        print(str(e))
-        traceback.print_exc()
+        print("Exception occured closing Socket connection")
+        # print(str(e))
+        # traceback.print_exc()
     finally:
         client.close_connection()
