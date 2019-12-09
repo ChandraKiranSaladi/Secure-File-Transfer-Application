@@ -28,8 +28,27 @@ The application will include the following security requirements:
 * MultiThreading and Socket Programming
 * Cryptographic Hash Functions
 * Public Key Cryptography
-
+* Python pip package: PyCryptodome
 *** 
+
+### Execution
+
+1) Make sure to install PyCryptodome library
+```python
+    $ pip install pycryptodome
+```
+2) Clone the repo 
+```
+    $ git clone https://github.com/ChandraKiranSaladi/Secure-File-Transfer-Application.git
+```
+3) Place the files you wish to transfer to server inside client_directory and files to transfer to client inside server_directory
+4) Open 2 terminals to and execute server and client python files respectively
+```python
+    $ python server.py
+    $ python client.py
+```
+5) Choose options from the client terminal to list server files, client files or upload, download documents
+6) Choose exit when you wish to exit the application
 
 ### Team Members
 

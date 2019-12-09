@@ -1,6 +1,7 @@
 import socket
 import sys
 import os
+import hashlib
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_OAEP
 from Crypto.Util.strxor import strxor
@@ -128,16 +129,16 @@ class Server:
         """
         if(len(msg) != 32):
             msg = pad(msg,32)
-        encrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
-        integrity = SHA256.new(msg+sha_integrity_key_string).digest()
+        encrypted_msg = strxor(hashlib.sha256(sha_key_string).digest(),msg)
+        integrity = hashlib.sha256(msg+sha_integrity_key_string).digest()
         return encrypted_msg + integrity
 
     def get_decrypted_msg(self,msg,sha_key_string, sha_integrity_key_string):
         integrity = msg[32:]
         msg = msg[:32]
-        decrypted_msg = strxor(SHA256.new(sha_key_string).digest(),msg)
+        decrypted_msg = strxor(hashlib.sha256(sha_key_string).digest(),msg)
 
-        sha_integrity = SHA256.new(decrypted_msg+sha_integrity_key_string).digest()
+        sha_integrity = hashlib.sha256(decrypted_msg+sha_integrity_key_string).digest()
 
         if  not sha_integrity == integrity:
             print("Message is tampered")
@@ -213,8 +214,9 @@ class Server:
     def receive_data(self,seqA,seqB, encryption_key, integrity_key):
         data = b''
         while True:
-            
-            msg = self.get_decrypted_msg(self.socket.recv(64),"Alice".encode()+encryption_key+self.int_to_bytes(seqA,32),integrity_key+self.int_to_bytes(seqA,32))
+            encryption_key_string = "Alice".encode()+encryption_key+self.int_to_bytes(seqA,32)
+            integrity_key_string = integrity_key+self.int_to_bytes(seqA,32)
+            msg = self.get_decrypted_msg(self.socket.recv(64),encryption_key_string,integrity_key_string)
             chunk_length = self.bytes_to_int(msg[0:2])
             chunk = msg[2:2+chunk_length]
             try:
@@ -225,11 +227,11 @@ class Server:
                     break
             except UnicodeDecodeError:
                 pass
-            self.send_command("Ok",seqA,seqB, encryption_key, integrity_key)
+            # self.send_command("Ok",seqA,seqB, encryption_key, integrity_key)
             data += chunk
             # print(" len file_data: ",len(file_data))
             seqA += 1
-            seqB += 1
+            # seqB += 1
             
         return data
 
@@ -318,18 +320,21 @@ class Server:
                     end_loop = True
 
                 chunk = self.int_to_bytes(len(chunk),2) + chunk
+                encryption_key_string = key_string+self.int_to_bytes(seqB,32)
+                integrity_key_string = integrity_key+self.int_to_bytes(seqB,32)
                 # Encryption using SHA
-                msg = self.get_encrypted_msg_with_integrity(chunk,key_string+self.int_to_bytes(seqB,32), integrity_key+self.int_to_bytes(seqB,32))
+                msg = self.get_encrypted_msg_with_integrity(chunk,encryption_key_string,integrity_key_string )
                 self.socket.send(msg)
-
-                recv_msg = self.socket.recv(64)
-                msg = self.get_decrypted_msg(recv_msg,"Alice".encode()+encryption_key+self.int_to_bytes(seqA,32),integrity_key+self.int_to_bytes(seqA,32))
-                ack_length = self.bytes_to_int(msg[0:2])
-                ack_chunk = msg[2:2+ack_length]
-                if ack_chunk != "Ok".encode():
-                    trial_count -= 1
+                # encryption_key_string = "Alice".encode()+encryption_key+self.int_to_bytes(seqA,32)
+                # integrity_key_string = integrity_key+self.int_to_bytes(seqA,32)
+                # recv_msg = self.socket.recv(64)
+                # msg = self.get_decrypted_msg(recv_msg,encryption_key_string,integrity_key_string)
+                # ack_length = self.bytes_to_int(msg[0:2])
+                # ack_chunk = msg[2:2+ack_length]
+                # if ack_chunk != "Ok".encode():
+                #     trial_count -= 1
                 #Increase the offset by chunk size
-                seqA += 1
+                # seqA += 1
                 seqB += 1
                 if trial_count == 2:
                     break
